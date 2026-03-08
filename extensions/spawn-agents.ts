@@ -250,12 +250,13 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 	// ── Tools (LLM-callable) ───────────────────────────────────────────
 
 	pi.registerTool({
-		name: "run_agent",
-		label: "Run Agent",
+		name: "spawn_agent",
+		label: "Spawn Agent",
 		description:
-			"Run a headless read-only Pi sub-agent synchronously — blocks until the agent finishes and returns its output. " +
+			"Spawn a headless read-only Pi sub-agent and wait for its result (synchronous). Blocks until the agent finishes and returns its output. " +
 			"The agent has read/grep/find/ls tools only (no file editing). " +
 			"Use for quick lookups, code analysis, validation, or any task where you need the answer before continuing. " +
+			"For background/parallel work, use spawn_agent_async instead. " +
 			"Provide a clear, self-contained prompt — the agent has no conversation context from the parent session.",
 		parameters: Type.Object({
 			prompt: Type.String({ description: "Task prompt for the sub-agent. Must be self-contained — include all necessary context." }),
@@ -284,11 +285,13 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "spawn_agent",
-		label: "Spawn Agent",
+		name: "spawn_agent_async",
+		label: "Spawn Agent Async",
 		description:
-			"Spawn a headless read-only Pi sub-agent. The agent runs in the background with read/grep/find/ls tools only (no file editing). " +
-			"Returns an agent ID for checking results later. Use for parallel analysis: code review, research, validation. " +
+			"Spawn a headless read-only Pi sub-agent in the background (asynchronous). Returns an agent ID immediately without waiting. " +
+			"The agent has read/grep/find/ls tools only (no file editing). " +
+			"Use for parallel work: spawn multiple agents, then collect results with check_agent or wait_agents. " +
+			"For single tasks where you need the answer now, use spawn_agent instead. " +
 			"Provide a clear, self-contained prompt — the agent has no conversation context from the parent session.",
 		parameters: Type.Object({
 			prompt: Type.String({ description: "Task prompt for the sub-agent. Must be self-contained — include all necessary context." }),

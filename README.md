@@ -29,23 +29,19 @@ pi install ./pi-spawn-agents
 
 The extension registers 5 tools that the LLM can call:
 
-### Synchronous (blocks until done)
-
-### `run-agent`
-Spawn a headless Pi instance, block until it finishes, return the output. Use for most tasks.
-
-```
-run-agent(prompt, context?, model?)
-→ { ok: true, id: "review-reuse", status: "done", output: "..." }
-```
-
-### Asynchronous (spawn and continue)
-
 ### `spawn-agent`
-Spawn a headless Pi instance in the background. Returns an agent ID immediately.
+Spawn a headless Pi instance, block until it finishes, return the output. Use for most tasks (synchronous).
 
 ```
 spawn-agent(prompt, context?, model?)
+→ { ok: true, id: "review-reuse", status: "done", output: "..." }
+```
+
+### `spawn-agent-async`
+Spawn a headless Pi instance in the background. Returns an agent ID immediately (asynchronous).
+
+```
+spawn-agent-async(prompt, context?, model?)
 → { ok: true, id: "review-reuse", status: "running" }
 ```
 
