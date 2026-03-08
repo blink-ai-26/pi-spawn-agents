@@ -1,38 +1,19 @@
 ---
 name: simplify
-description: Post-implementation cleanup. Reviews recent code changes with parallel sub-agents (reuse, quality, efficiency), aggregates findings, and applies worthwhile fixes. Use after finishing a feature, before opening a PR. Requires the spawn_agent tool from pi-spawn-agents.
+description: Post-implementation code review and cleanup. Reviews recent changes with parallel sub-agents for reuse, quality, and efficiency, then fixes issues found. Use after finishing a feature or before opening a PR. Requires the spawn_agent tool from pi-spawn-agents.
 ---
 
-# Simplify
+# Simplify: Code Review and Cleanup
 
-Post-implementation review and cleanup using parallel sub-agents.
+Review all changed files for reuse, quality, and efficiency. Fix any issues found.
 
-## When to Use
+## Phase 1: Identify Changes
 
-- After finishing a feature implementation
-- After a bug fix, before committing
-- After prototyping code you want to keep
-- Before opening a PR
+Run `git diff` (or `git diff HEAD` if there are staged changes) to see what changed. If there are no git changes, review the most recently modified files that the user mentioned or that you edited earlier in this conversation.
 
-## How It Works
+## Phase 2: Launch Three Review Agents in Parallel
 
-1. Get the diff of recent changes
-2. Spawn 3 parallel review agents, each with a different focus
-3. Aggregate their findings
-4. Apply only the changes that genuinely improve the code
-5. Summarize what was changed
-
-## Instructions
-
-### Step 1: Get the diff
-
-Run `git diff` to capture uncommitted changes. If there are no uncommitted changes, use `git diff HEAD~1` to review the last commit. If the user provided a focus hint (e.g., `/skill:simplify focus on the scraper module`), note it for the reviewers.
-
-Store the full diff output — you'll pass it as context to each reviewer.
-
-### Step 2: Spawn reviewers
-
-Use `spawn_agent` with 3 parallel agents. Pass the diff as `context` to each one.
+Use the `spawn_agent` tool to launch all three agents concurrently in a single call. Pass each agent the full diff as context so it has the complete picture.
 
 ```
 spawn_agent(agents: [
@@ -42,98 +23,37 @@ spawn_agent(agents: [
 ])
 ```
 
-Use these reviewer prompts:
+### Agent 1: Code Reuse Review
 
-**Reuse reviewer:**
-```
-You are reviewing a code diff for code reuse opportunities. Your job is to find places where:
+For each change:
 
-- New code duplicates existing utilities, helpers, or patterns already in the codebase
-- The same logic appears in multiple places in the diff and could be extracted
-- Hand-rolled implementations exist where a standard library function or existing helper would work
-- Similar patterns are repeated with minor variations that could be unified
+1. **Search for existing utilities and helpers** that could replace newly written code. Look for similar patterns elsewhere in the codebase — common locations are utility directories, shared modules, and files adjacent to the changed ones.
+2. **Flag any new function that duplicates existing functionality.** Suggest the existing function to use instead.
+3. **Flag any inline logic that could use an existing utility** — hand-rolled string manipulation, manual path handling, custom environment checks, ad-hoc type guards, and similar patterns are common candidates.
 
-For each finding, specify:
-- The file and approximate location
-- What the current code does
-- What it should use instead (be specific — name the existing function, module, or pattern)
-- Why this matters (not just "DRY" — explain the concrete benefit)
+### Agent 2: Code Quality Review
 
-Only report findings you're confident about. If you need to check whether a utility exists, use the read tool to look. Do NOT suggest creating new abstractions just for the sake of it — only flag reuse of things that already exist or clear duplication within the diff.
+Review the same changes for hacky patterns:
 
-If you find nothing worth flagging, say so. An empty report is better than noise.
-```
+1. **Redundant state**: state that duplicates existing state, cached values that could be derived, observers/effects that could be direct calls
+2. **Parameter sprawl**: adding new parameters to a function instead of generalizing or restructuring existing ones
+3. **Copy-paste with slight variation**: near-duplicate code blocks that should be unified with a shared abstraction
+4. **Leaky abstractions**: exposing internal details that should be encapsulated, or breaking existing abstraction boundaries
+5. **Stringly-typed code**: using raw strings where constants, enums (string unions), or branded types already exist in the codebase
 
-**Quality reviewer:**
-```
-You are reviewing a code diff for code quality issues. Your job is to find:
+### Agent 3: Efficiency Review
 
-- Redundant or unnecessary state (variables that could be derived, flags that duplicate other conditions)
-- Functions with too many parameters that should use an options object or be split
-- Copy-paste code within the diff that should be a shared function
-- Leaky abstractions (implementation details exposed where they shouldn't be)
-- Stringly-typed code that should use enums, constants, or typed objects
-- Poor naming that obscures intent
-- Missing or incorrect error handling
-- Overly complex logic that could be simplified without changing behavior
+Review the same changes for efficiency:
 
-For each finding, specify:
-- The file and approximate location
-- What the issue is
-- A concrete suggestion for fixing it (not vague — show what the code should look like)
-- Whether it's a real problem or a style preference (be honest)
+1. **Unnecessary work**: redundant computations, repeated file reads, duplicate network/API calls, N+1 patterns
+2. **Missed concurrency**: independent operations run sequentially when they could run in parallel
+3. **Hot-path bloat**: new blocking work added to startup or per-request/per-render hot paths
+4. **Unnecessary existence checks**: pre-checking file/resource existence before operating (TOCTOU anti-pattern) — operate directly and handle the error
+5. **Memory**: unbounded data structures, missing cleanup, event listener leaks
+6. **Overly broad operations**: reading entire files when only a portion is needed, loading all items when filtering for one
 
-Do NOT flag:
-- Formatting or whitespace issues (that's what formatters are for)
-- Minor naming preferences that don't affect clarity
-- "I would have done it differently" opinions that aren't objectively better
+## Phase 3: Fix Issues
 
-If you find nothing worth flagging, say so.
-```
+Wait for all three agents to complete. Aggregate their findings and fix each issue directly. If a finding is a false positive or not worth addressing, note it and move on — do not argue with the finding, just skip it.
 
-**Efficiency reviewer:**
-```
-You are reviewing a code diff for efficiency issues. Your job is to find:
-
-- Unnecessary work: redundant iterations, repeated computations that could be cached, O(n²) where O(n) is possible
-- Missed concurrency: independent async operations that run sequentially but could be parallelized
-- Hot-path bloat: heavy operations (logging, serialization, allocation) in tight loops or frequently-called paths
-- Resource leaks: unclosed handles, missing cleanup, connections that aren't released
-- TOCTOU patterns: check-then-act where the state could change between check and act
-- Unnecessary memory copies or allocations
-
-For each finding, specify:
-- The file and approximate location
-- What the performance issue is
-- The concrete fix (not "optimize this" — show what should change)
-- Whether it matters in practice (a micro-optimization in cold code isn't worth the complexity)
-
-Do NOT flag:
-- Premature optimization opportunities that would make code harder to read for negligible gain
-- Theoretical issues that won't manifest at the actual scale of this code
-- "Use a more efficient data structure" when the dataset is always small
-
-If you find nothing worth flagging, say so.
-```
-
-### Step 3: Aggregate and filter
-
-Read all 3 reviewer outputs. For each finding, decide:
-
-- **Apply** — the suggestion is correct, improves the code, and doesn't add unnecessary complexity
-- **Skip** — the suggestion is technically valid but would over-engineer, is a style preference, or the benefit doesn't justify the change
-
-Be opinionated. The goal is to make the code genuinely better, not to satisfy every reviewer. If a suggestion would make the code harder to read for a marginal improvement, skip it.
-
-### Step 4: Apply fixes
-
-For each finding you decided to apply, make the edit using your normal edit tools. Work through them one at a time.
-
-### Step 5: Summarize
-
-Tell the user:
-- How many findings each reviewer reported
-- How many you applied vs skipped (and briefly why you skipped the ones you skipped)
-- What changed (list each applied fix in one line)
-
-If you applied nothing, say so — "all 3 reviewers came back clean" or "found 4 suggestions but none were worth the complexity" is a valid outcome.
+When done, briefly summarize what was fixed (or confirm the code was already clean).
