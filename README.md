@@ -27,74 +27,61 @@ pi install ./pi-spawn-agents
 
 ## Tools
 
-The extension registers 5 tools that the LLM can call:
+### `spawn_agent`
 
-### `spawn-agent`
-Spawn a headless Pi instance, block until it finishes, return the output. Use for most tasks (synchronous).
+Spawn one or more read-only sub-agents and wait for results (synchronous).
 
+**Single agent:**
 ```
-spawn-agent(prompt, context?, model?)
-→ { ok: true, id: "review-reuse", status: "done", output: "..." }
-```
-
-### `spawn-agent-async`
-Spawn a headless Pi instance in the background. Returns an agent ID immediately (asynchronous).
-
-```
-spawn-agent-async(prompt, context?, model?)
-→ { ok: true, id: "review-reuse", status: "running" }
+spawn_agent(prompt: "What does this function do?", context?: "...")
+→ { ok: true, results: [{ id, status, output }] }
 ```
 
-### `check-agent`
-Check if a spawned agent is done and get its output.
-
+**Multiple agents in parallel:**
 ```
-check-agent(id)
-→ { ok: true, status: "done", output: "..." }
-```
-
-### `wait-agents`
-Block until any of the specified agents finishes. Returns the first completed agent's output.
-
-```
-wait-agents(ids)
-→ { ok: true, id: "review-reuse", status: "done", output: "..." }
+spawn_agent(agents: [
+  { prompt: "Review for code reuse", context: diff },
+  { prompt: "Review for quality", context: diff },
+  { prompt: "Review for efficiency", context: diff }
+])
+→ { ok: true, results: [{ id, status, output }, ...] }
 ```
 
-### `kill-agent`
-Kill a running agent.
+Blocks until all agents finish. Each agent has `read/grep/find/ls` tools only — no file editing.
+
+### `kill_agent`
+
+Kill a running agent by ID.
 
 ```
-kill-agent(id)
+kill_agent(id: "review-reuse")
 → { ok: true }
 ```
 
 ## Commands
 
-### `/spawn`
-Interactively spawn an agent: `/spawn [-model provider/id] <prompt>`
-
-### `/spawns`
-List all active/completed spawned agents and their status.
+- `/spawn [-model provider/id] <prompt>` — spawn a single agent interactively
+- `/spawns` — list all agents and their status
 
 ## Design
 
-- **Headless**: No tmux, no interactive sessions. Agents run as background `pi -p` processes.
-- **Read-only**: Spawned agents use `--tools read,grep,find,ls` — no bash, no write, no edit.
-- **Parallel**: Spawn as many as you want. They don't interfere with each other or the parent.
-- **No isolation needed**: Since agents are read-only, they all safely share the same working directory.
-- **Simple lifecycle**: running → done/failed. No worktrees, no merge flows, no status bars.
+- **2 tools, not 7.** One tool spawns agents (one or many), the other kills them.
+- **Synchronous.** Agents block until done. No async polling, no callbacks.
+- **Read-only.** Spawned agents can read files but never edit them.
+- **Parallel.** Pass multiple prompts to run agents simultaneously.
+- **No isolation needed.** Read-only agents safely share the working directory.
 
 ## Example: /simplify skill
 
 ```
-# In a Pi skill that uses spawn-agents:
 1. Run git diff to get changed files
-2. spawn-agent("Review this diff for code reuse opportunities...", diff)
-3. spawn-agent("Review this diff for code quality issues...", diff)
-4. spawn-agent("Review this diff for efficiency problems...", diff)
-5. wait-agents(all three IDs)
-6. Aggregate results, apply the good suggestions
+2. spawn_agent(agents: [
+     { prompt: "Review this diff for code reuse opportunities...", context: diff },
+     { prompt: "Review this diff for code quality issues...", context: diff },
+     { prompt: "Review this diff for efficiency problems...", context: diff }
+   ])
+3. All 3 run in parallel, results come back together
+4. Aggregate results, apply the good suggestions
 ```
 
 ## License

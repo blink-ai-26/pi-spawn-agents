@@ -45,7 +45,6 @@ function generateId(prompt: string): string {
 		.filter((w) => w.length > 0 && !stopWords.has(w));
 	const slug = words.slice(0, 3).join("-") || "agent";
 
-	// Deduplicate
 	if (!agents.has(slug)) return slug;
 	for (let i = 2; ; i++) {
 		const candidate = `${slug}-${i}`;
@@ -74,9 +73,9 @@ function truncateOutput(output: string, maxChars = 50_000): string {
 	return output.slice(0, maxChars) + "\n\n[output truncated]";
 }
 
-// ── Core: spawn a headless agent ───────────────────────────────────────
+// ── Core ───────────────────────────────────────────────────────────────
 
-async function spawnAgent(
+async function spawnOne(
 	ctx: ExtensionContext,
 	prompt: string,
 	options?: { model?: string; context?: string },
@@ -90,11 +89,9 @@ async function spawnAgent(
 		? `${prompt}\n\n---\n\n${options.context}`
 		: prompt;
 
-	// Write prompt to file for reference/debugging
 	const promptPath = join(outputDir, `${id}.prompt`);
 	await fs.writeFile(promptPath, fullPrompt, "utf8");
 
-	// Build pi command args
 	const args: string[] = [
 		"-p", fullPrompt,
 		"--tools", "read,grep,find,ls",
@@ -105,7 +102,6 @@ async function spawnAgent(
 		args.push("--model", options.model);
 	}
 
-	// Spawn pi as a background process
 	const outStream = await fs.open(outputPath, "w");
 	const child = spawn("pi", args, {
 		cwd: ctx.cwd,
@@ -151,112 +147,26 @@ async function spawnAgent(
 	return record;
 }
 
-async function checkAgent(id: string): Promise<{
-	ok: boolean;
-	id?: string;
-	status?: AgentStatus;
-	output?: string;
-	error?: string;
-	startedAt?: string;
-	finishedAt?: string;
-	prompt?: string;
-}> {
-	const record = agents.get(id);
-	if (!record) {
-		return { ok: false, error: `Unknown agent id: ${id}` };
-	}
-
-	const output = record.status !== "running"
-		? truncateOutput(await readOutput(record.outputPath))
-		: undefined;
-
-	return {
-		ok: true,
-		id: record.id,
-		status: record.status,
-		output,
-		startedAt: record.startedAt,
-		finishedAt: record.finishedAt,
-		prompt: record.prompt,
-		error: record.error,
-	};
-}
-
-async function waitForAny(
-	ids: string[],
-	signal?: AbortSignal,
-): Promise<{ ok: boolean; id?: string; status?: AgentStatus; output?: string; error?: string }> {
-	const unique = [...new Set(ids)];
-
-	// Validate all IDs exist
-	const unknown = unique.filter((id) => !agents.has(id));
-	if (unknown.length > 0) {
-		return { ok: false, error: `Unknown agent id(s): ${unknown.join(", ")}` };
-	}
-
-	// Poll until one finishes
-	while (true) {
-		if (signal?.aborted) {
-			return { ok: false, error: "Aborted" };
-		}
-
-		for (const id of unique) {
-			const record = agents.get(id);
-			if (!record) continue;
-
-			if (record.status === "done" || record.status === "failed") {
-				const output = truncateOutput(await readOutput(record.outputPath));
-				return {
-					ok: true,
-					id: record.id,
-					status: record.status,
-					output,
-					error: record.error,
-				};
-			}
-		}
-
-		await new Promise((r) => setTimeout(r, 500));
-	}
-}
-
 async function waitForAll(
 	ids: string[],
 	signal?: AbortSignal,
-): Promise<{ ok: boolean; results?: Array<{ id: string; status: AgentStatus; output: string; error?: string }>; error?: string }> {
-	const unique = [...new Set(ids)];
-
-	// Validate all IDs exist
-	const unknown = unique.filter((id) => !agents.has(id));
-	if (unknown.length > 0) {
-		return { ok: false, error: `Unknown agent id(s): ${unknown.join(", ")}` };
-	}
-
-	// Poll until ALL finish
+): Promise<Array<{ id: string; status: AgentStatus; output: string; error?: string }>> {
 	while (true) {
-		if (signal?.aborted) {
-			return { ok: false, error: "Aborted" };
-		}
+		if (signal?.aborted) throw new Error("Aborted");
 
-		const allDone = unique.every((id) => {
+		const allDone = ids.every((id) => {
 			const record = agents.get(id);
 			return record && (record.status === "done" || record.status === "failed");
 		});
 
 		if (allDone) {
-			const results = await Promise.all(
-				unique.map(async (id) => {
+			return Promise.all(
+				ids.map(async (id) => {
 					const record = agents.get(id)!;
 					const output = truncateOutput(await readOutput(record.outputPath));
-					return {
-						id: record.id,
-						status: record.status,
-						output,
-						error: record.error,
-					};
+					return { id: record.id, status: record.status, output, error: record.error };
 				}),
 			);
-			return { ok: true, results };
 		}
 
 		await new Promise((r) => setTimeout(r, 500));
@@ -265,14 +175,10 @@ async function waitForAll(
 
 function killAgent(id: string): { ok: boolean; error?: string } {
 	const record = agents.get(id);
-	if (!record) {
-		return { ok: false, error: `Unknown agent id: ${id}` };
-	}
+	if (!record) return { ok: false, error: `Unknown agent id: ${id}` };
 
 	const child = processes.get(id);
-	if (!child) {
-		return { ok: true }; // Already finished
-	}
+	if (!child) return { ok: true };
 
 	try {
 		child.kill("SIGTERM");
@@ -286,120 +192,58 @@ function killAgent(id: string): { ok: boolean; error?: string } {
 	}
 }
 
-// ── Extension entry point ──────────────────────────────────────────────
+// ── Extension ──────────────────────────────────────────────────────────
 
 export default function spawnAgentsExtension(pi: ExtensionAPI) {
-
-	// ── Tools (LLM-callable) ───────────────────────────────────────────
 
 	pi.registerTool({
 		name: "spawn_agent",
 		label: "Spawn Agent",
 		description:
-			"Spawn a headless read-only Pi sub-agent and wait for its result (synchronous). Blocks until the agent finishes and returns its output. " +
-			"The agent has read/grep/find/ls tools only (no file editing). " +
-			"Use for quick lookups, code analysis, validation, or any task where you need the answer before continuing. " +
-			"For background/parallel work, use spawn_agent_async instead. " +
-			"Provide a clear, self-contained prompt — the agent has no conversation context from the parent session.",
-		parameters: Type.Object({
-			prompt: Type.String({ description: "Task prompt for the sub-agent. Must be self-contained — include all necessary context." }),
-			context: Type.Optional(Type.String({ description: "Additional context (e.g., a diff, file contents) appended to the prompt." })),
-			model: Type.Optional(Type.String({ description: "Model override as provider/modelId (optional, uses parent's default if omitted)." })),
-		}),
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			try {
-				const record = await spawnAgent(ctx, params.prompt, {
-					model: params.model,
-					context: params.context,
-				});
-				const result = await waitForAny([record.id], signal);
-				return {
-					content: [{
-						type: "text",
-						text: JSON.stringify(result, null, 2),
-					}],
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }, null, 2) }],
-				};
-			}
-		},
-	});
-
-	pi.registerTool({
-		name: "spawn_agents",
-		label: "Spawn Agents",
-		description:
-			"Spawn multiple headless read-only Pi sub-agents in parallel and wait for ALL of them to finish (synchronous batch). " +
+			"Spawn one or more headless read-only Pi sub-agents and wait for all results (synchronous). " +
 			"Each agent has read/grep/find/ls tools only (no file editing). " +
-			"Returns all outputs once every agent has completed. Use for parallel analysis like code review, research, or validation " +
-			"where you need multiple perspectives before continuing. " +
-			"Each prompt must be self-contained — agents have no conversation context from the parent session.",
+			"Pass a single prompt string for one agent, or an array of {prompt, context?} objects to run multiple agents in parallel. " +
+			"Blocks until all agents finish, then returns all outputs. " +
+			"Provide clear, self-contained prompts — agents have no conversation context from the parent session.",
 		parameters: Type.Object({
-			agents: Type.Array(
+			prompt: Type.Optional(Type.String({ description: "Task prompt for a single sub-agent. Use this OR agents, not both." })),
+			context: Type.Optional(Type.String({ description: "Additional context appended to the prompt (only with single prompt)." })),
+			agents: Type.Optional(Type.Array(
 				Type.Object({
 					prompt: Type.String({ description: "Task prompt for this sub-agent." }),
 					context: Type.Optional(Type.String({ description: "Additional context appended to the prompt." })),
 				}),
-				{ description: "Array of agent tasks to run in parallel.", minItems: 1 },
-			),
-			model: Type.Optional(Type.String({ description: "Model override for all agents (optional)." })),
+				{ description: "Array of agent tasks to run in parallel. Use this OR prompt, not both.", minItems: 1 },
+			)),
+			model: Type.Optional(Type.String({ description: "Model override as provider/modelId (optional)." })),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			try {
+				// Normalize: single prompt or array of agents
+				const tasks: Array<{ prompt: string; context?: string }> = params.agents
+					? params.agents
+					: params.prompt
+						? [{ prompt: params.prompt, context: params.context }]
+						: [];
+
+				if (tasks.length === 0) {
+					return {
+						content: [{ type: "text", text: JSON.stringify({ ok: false, error: "No prompt or agents provided." }, null, 2) }],
+					};
+				}
+
 				// Spawn all agents
 				const records = await Promise.all(
-					params.agents.map((a: { prompt: string; context?: string }) =>
-						spawnAgent(ctx, a.prompt, { model: params.model, context: a.context }),
-					),
+					tasks.map((t) => spawnOne(ctx, t.prompt, { model: params.model, context: t.context })),
 				);
 
-				const ids = records.map((r) => r.id);
-
 				// Wait for all to finish
-				const result = await waitForAll(ids, signal);
-				return {
-					content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }, null, 2) }],
-				};
-			}
-		},
-	});
+				const results = await waitForAll(records.map((r) => r.id), signal);
 
-	pi.registerTool({
-		name: "spawn_agent_async",
-		label: "Spawn Agent Async",
-		description:
-			"Spawn a headless read-only Pi sub-agent in the background (asynchronous). Returns an agent ID immediately without waiting. " +
-			"The agent has read/grep/find/ls tools only (no file editing). " +
-			"Use for parallel work: spawn multiple agents, then collect results with check_agent or wait_agents. " +
-			"For single tasks where you need the answer now, use spawn_agent instead. " +
-			"Provide a clear, self-contained prompt — the agent has no conversation context from the parent session.",
-		parameters: Type.Object({
-			prompt: Type.String({ description: "Task prompt for the sub-agent. Must be self-contained — include all necessary context." }),
-			context: Type.Optional(Type.String({ description: "Additional context (e.g., a diff, file contents) appended to the prompt." })),
-			model: Type.Optional(Type.String({ description: "Model override as provider/modelId (optional, uses parent's default if omitted)." })),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			try {
-				const record = await spawnAgent(ctx, params.prompt, {
-					model: params.model,
-					context: params.context,
-				});
 				return {
 					content: [{
 						type: "text",
-						text: JSON.stringify({
-							ok: true,
-							id: record.id,
-							status: record.status,
-							pid: record.pid,
-							prompt: record.prompt,
-						}, null, 2),
+						text: JSON.stringify({ ok: true, results }, null, 2),
 					}],
 				};
 			} catch (err) {
@@ -407,61 +251,6 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 					content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }, null, 2) }],
 				};
 			}
-		},
-	});
-
-	pi.registerTool({
-		name: "check_agent",
-		label: "Check Agent",
-		description:
-			"Check status of a spawned sub-agent. Returns status (running/done/failed) and output if finished. " +
-			"Output is only returned when the agent has completed — if still running, output will be undefined.",
-		parameters: Type.Object({
-			id: Type.String({ description: "Agent ID returned by spawn_agent." }),
-		}),
-		async execute(_toolCallId, params) {
-			const result = await checkAgent(params.id);
-			return {
-				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-			};
-		},
-	});
-
-	pi.registerTool({
-		name: "wait_agents",
-		label: "Wait Agents",
-		description:
-			"Block until any of the specified agents finishes (done or failed). Returns the first completed agent's status and output. " +
-			"Use after spawning multiple agents in parallel to collect results as they complete.",
-		parameters: Type.Object({
-			ids: Type.Array(Type.String({ description: "Agent ID" }), {
-				description: "Agent IDs to wait on. Returns when any one of them finishes.",
-			}),
-		}),
-		async execute(_toolCallId, params, signal) {
-			const result = await waitForAny(params.ids, signal);
-			return {
-				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-			};
-		},
-	});
-
-	pi.registerTool({
-		name: "wait_all_agents",
-		label: "Wait All Agents",
-		description:
-			"Block until ALL of the specified async agents finish (done or failed). Returns all outputs. " +
-			"Unlike wait_agents (which returns on the first completion), this waits for every agent to complete.",
-		parameters: Type.Object({
-			ids: Type.Array(Type.String({ description: "Agent ID" }), {
-				description: "Agent IDs to wait for. Returns when ALL of them finish.",
-			}),
-		}),
-		async execute(_toolCallId, params, signal) {
-			const result = await waitForAll(params.ids, signal);
-			return {
-				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-			};
 		},
 	});
 
@@ -480,10 +269,10 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ── Commands (user-callable) ───────────────────────────────────────
+	// ── Commands ────────────────────────────────────────────────────────
 
 	pi.registerCommand("spawn", {
-		description: "Spawn a headless sub-agent: /spawn [-model provider/id] <prompt>",
+		description: "Spawn a sub-agent: /spawn [-model provider/id] <prompt>",
 		handler: async (args, ctx) => {
 			if (!args?.trim()) {
 				if (ctx.hasUI) ctx.ui.notify("Usage: /spawn [-model provider/id] <prompt>", "error");
@@ -505,10 +294,15 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 			}
 
 			try {
-				const record = await spawnAgent(ctx, prompt, { model });
-				if (ctx.hasUI) {
-					ctx.ui.notify(`Spawned agent "${record.id}" (pid ${record.pid})`, "info");
-				}
+				if (ctx.hasUI) ctx.ui.notify("Spawning agent…", "info");
+				const record = await spawnOne(ctx, prompt, { model });
+				const results = await waitForAll([record.id]);
+
+				pi.sendMessage({
+					customType: "spawn-agent-result",
+					content: `Agent "${record.id}" finished:\n\n${results[0].output}`,
+					display: true,
+				});
 			} catch (err) {
 				if (ctx.hasUI) ctx.ui.notify(`Failed: ${err}`, "error");
 			}
@@ -524,12 +318,11 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 			}
 
 			const lines: string[] = [];
-			for (const [id, record] of agents) {
-				const status = record.status;
+			for (const [_id, record] of agents) {
 				const elapsed = record.finishedAt
 					? `(${Math.round((new Date(record.finishedAt).getTime() - new Date(record.startedAt).getTime()) / 1000)}s)`
 					: "(running)";
-				lines.push(`${id}: ${status} ${elapsed}`);
+				lines.push(`${record.id}: ${record.status} ${elapsed}`);
 				lines.push(`  prompt: ${record.prompt}`);
 				if (record.error) lines.push(`  error: ${record.error}`);
 			}
