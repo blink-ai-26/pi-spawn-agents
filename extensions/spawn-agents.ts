@@ -220,6 +220,49 @@ async function waitForAny(
 	}
 }
 
+async function waitForAll(
+	ids: string[],
+	signal?: AbortSignal,
+): Promise<{ ok: boolean; results?: Array<{ id: string; status: AgentStatus; output: string; error?: string }>; error?: string }> {
+	const unique = [...new Set(ids)];
+
+	// Validate all IDs exist
+	const unknown = unique.filter((id) => !agents.has(id));
+	if (unknown.length > 0) {
+		return { ok: false, error: `Unknown agent id(s): ${unknown.join(", ")}` };
+	}
+
+	// Poll until ALL finish
+	while (true) {
+		if (signal?.aborted) {
+			return { ok: false, error: "Aborted" };
+		}
+
+		const allDone = unique.every((id) => {
+			const record = agents.get(id);
+			return record && (record.status === "done" || record.status === "failed");
+		});
+
+		if (allDone) {
+			const results = await Promise.all(
+				unique.map(async (id) => {
+					const record = agents.get(id)!;
+					const output = truncateOutput(await readOutput(record.outputPath));
+					return {
+						id: record.id,
+						status: record.status,
+						output,
+						error: record.error,
+					};
+				}),
+			);
+			return { ok: true, results };
+		}
+
+		await new Promise((r) => setTimeout(r, 500));
+	}
+}
+
 function killAgent(id: string): { ok: boolean; error?: string } {
 	const record = agents.get(id);
 	if (!record) {
@@ -275,6 +318,49 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 						type: "text",
 						text: JSON.stringify(result, null, 2),
 					}],
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }, null, 2) }],
+				};
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "spawn_agents",
+		label: "Spawn Agents",
+		description:
+			"Spawn multiple headless read-only Pi sub-agents in parallel and wait for ALL of them to finish (synchronous batch). " +
+			"Each agent has read/grep/find/ls tools only (no file editing). " +
+			"Returns all outputs once every agent has completed. Use for parallel analysis like code review, research, or validation " +
+			"where you need multiple perspectives before continuing. " +
+			"Each prompt must be self-contained — agents have no conversation context from the parent session.",
+		parameters: Type.Object({
+			agents: Type.Array(
+				Type.Object({
+					prompt: Type.String({ description: "Task prompt for this sub-agent." }),
+					context: Type.Optional(Type.String({ description: "Additional context appended to the prompt." })),
+				}),
+				{ description: "Array of agent tasks to run in parallel.", minItems: 1 },
+			),
+			model: Type.Optional(Type.String({ description: "Model override for all agents (optional)." })),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			try {
+				// Spawn all agents
+				const records = await Promise.all(
+					params.agents.map((a: { prompt: string; context?: string }) =>
+						spawnAgent(ctx, a.prompt, { model: params.model, context: a.context }),
+					),
+				);
+
+				const ids = records.map((r) => r.id);
+
+				// Wait for all to finish
+				const result = await waitForAll(ids, signal);
+				return {
+					content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 				};
 			} catch (err) {
 				return {
@@ -354,6 +440,25 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, signal) {
 			const result = await waitForAny(params.ids, signal);
+			return {
+				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "wait_all_agents",
+		label: "Wait All Agents",
+		description:
+			"Block until ALL of the specified async agents finish (done or failed). Returns all outputs. " +
+			"Unlike wait_agents (which returns on the first completion), this waits for every agent to complete.",
+		parameters: Type.Object({
+			ids: Type.Array(Type.String({ description: "Agent ID" }), {
+				description: "Agent IDs to wait for. Returns when ALL of them finish.",
+			}),
+		}),
+		async execute(_toolCallId, params, signal) {
+			const result = await waitForAll(params.ids, signal);
 			return {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 			};
