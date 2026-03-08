@@ -65,7 +65,7 @@ kill_agent(id: "review-reuse")
 
 ## Design
 
-- **2 tools, not 7.** One tool spawns agents (one or many), the other kills them.
+- **Minimal surface.** One tool to spawn agents, one to kill them. That's it.
 - **Synchronous.** Agents block until done. No async polling, no callbacks.
 - **Read-only.** Spawned agents can read files but never edit them.
 - **Parallel.** Pass multiple prompts to run agents simultaneously.
