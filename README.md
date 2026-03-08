@@ -14,13 +14,15 @@ Use cases:
 ## Install
 
 ```bash
-# Option 1: Clone and symlink
-git clone https://github.com/blink-ai-26/pi-spawn-agents.git
-mkdir -p ~/.pi/agent/extensions
-ln -s $(pwd)/pi-spawn-agents/extensions/spawn-agents.ts ~/.pi/agent/extensions/
+# Via Pi's package manager (recommended)
+pi install git:github.com/blink-ai-26/pi-spawn-agents
 
-# Option 2: Direct in extensions dir
-git clone https://github.com/blink-ai-26/pi-spawn-agents.git ~/.pi/agent/extensions/pi-spawn-agents
+# Or try without installing
+pi -e git:github.com/blink-ai-26/pi-spawn-agents
+
+# Or clone and install locally
+git clone https://github.com/blink-ai-26/pi-spawn-agents.git
+pi install ./pi-spawn-agents
 ```
 
 ## Tools
