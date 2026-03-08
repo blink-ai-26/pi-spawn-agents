@@ -71,7 +71,9 @@ kill_agent(id: "review-reuse")
 - **Parallel.** Pass multiple prompts to run agents simultaneously.
 - **No isolation needed.** Read-only agents safely share the working directory.
 
-## Example: /simplify skill
+## Example workflow: simplify review
+
+This package ships the `spawn_agent` and `kill_agent` tools plus `/spawn` and `/spawns` commands. It does **not** bundle a `/simplify` skill, but it works well as the engine behind one.
 
 ```
 1. Run git diff to get changed files

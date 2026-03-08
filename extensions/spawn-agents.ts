@@ -151,6 +151,11 @@ async function waitForAll(
 	ids: string[],
 	signal?: AbortSignal,
 ): Promise<Array<{ id: string; status: AgentStatus; output: string; error?: string }>> {
+	const unknown = ids.filter((id) => !agents.has(id));
+	if (unknown.length > 0) {
+		throw new Error(`Unknown agent id(s): ${unknown.join(", ")}`);
+	}
+
 	while (true) {
 		if (signal?.aborted) throw new Error("Aborted");
 
@@ -218,26 +223,27 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 			model: Type.Optional(Type.String({ description: "Model override as provider/modelId (optional)." })),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			let records: AgentRecord[] = [];
 			try {
-				// Normalize: single prompt or array of agents
-				const tasks: Array<{ prompt: string; context?: string }> = params.agents
-					? params.agents
-					: params.prompt
-						? [{ prompt: params.prompt, context: params.context }]
-						: [];
-
-				if (tasks.length === 0) {
+				const hasPrompt = typeof params.prompt === "string" && params.prompt.trim().length > 0;
+				const hasAgents = Array.isArray(params.agents) && params.agents.length > 0;
+				if (hasPrompt === hasAgents) {
 					return {
-						content: [{ type: "text", text: JSON.stringify({ ok: false, error: "No prompt or agents provided." }, null, 2) }],
+						content: [{
+							type: "text",
+							text: JSON.stringify({ ok: false, error: "Provide exactly one of prompt or agents." }, null, 2),
+						}],
 					};
 				}
 
-				// Spawn all agents
-				const records = await Promise.all(
+				const tasks: Array<{ prompt: string; context?: string }> = hasAgents
+					? params.agents
+					: [{ prompt: params.prompt.trim(), context: params.context }];
+
+				records = await Promise.all(
 					tasks.map((t) => spawnOne(ctx, t.prompt, { model: params.model, context: t.context })),
 				);
 
-				// Wait for all to finish
 				const results = await waitForAll(records.map((r) => r.id), signal);
 
 				return {
@@ -247,6 +253,9 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 					}],
 				};
 			} catch (err) {
+				if (signal?.aborted) {
+					for (const record of records) killAgent(record.id);
+				}
 				return {
 					content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }, null, 2) }],
 				};
