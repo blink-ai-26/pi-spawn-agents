@@ -250,6 +250,40 @@ export default function spawnAgentsExtension(pi: ExtensionAPI) {
 	// ── Tools (LLM-callable) ───────────────────────────────────────────
 
 	pi.registerTool({
+		name: "run_agent",
+		label: "Run Agent",
+		description:
+			"Run a headless read-only Pi sub-agent synchronously — blocks until the agent finishes and returns its output. " +
+			"The agent has read/grep/find/ls tools only (no file editing). " +
+			"Use for quick lookups, code analysis, validation, or any task where you need the answer before continuing. " +
+			"Provide a clear, self-contained prompt — the agent has no conversation context from the parent session.",
+		parameters: Type.Object({
+			prompt: Type.String({ description: "Task prompt for the sub-agent. Must be self-contained — include all necessary context." }),
+			context: Type.Optional(Type.String({ description: "Additional context (e.g., a diff, file contents) appended to the prompt." })),
+			model: Type.Optional(Type.String({ description: "Model override as provider/modelId (optional, uses parent's default if omitted)." })),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			try {
+				const record = await spawnAgent(ctx, params.prompt, {
+					model: params.model,
+					context: params.context,
+				});
+				const result = await waitForAny([record.id], signal);
+				return {
+					content: [{
+						type: "text",
+						text: JSON.stringify(result, null, 2),
+					}],
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(err) }, null, 2) }],
+				};
+			}
+		},
+	});
+
+	pi.registerTool({
 		name: "spawn_agent",
 		label: "Spawn Agent",
 		description:
